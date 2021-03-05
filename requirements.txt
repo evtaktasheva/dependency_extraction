@@ -1,0 +1,5 @@
+torch
+transformers==4.3.3
+torchvision==0.6.1
+conllu
+ufal-chu-liu-edmonds
