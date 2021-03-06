@@ -5,5 +5,6 @@ example: https://colab.research.google.com/drive/1lkuHhdTGO7smis-SQBejeHABoOGg1L
 
 to-do:
 - match ud-bert tokenization
+- cls + pad
 - change resulting files (names + one for each layer?) 
 - hewitt & manning
