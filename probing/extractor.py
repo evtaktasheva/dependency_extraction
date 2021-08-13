@@ -8,112 +8,134 @@ import torch
 from tqdm.auto import tqdm
 from ufal.chu_liu_edmonds import chu_liu_edmonds
 from probing.utilities import *
+from pprint import pprint
 
 
-class ExtractDependencies(object):
+class PerturbedProbe(object):
     def __init__(self, data, model, tokenizer, args):
         self.data = data
         self.model = model
         self.tokenizer = tokenizer
         self.args = args
+        self.layers = int(self.args.layers) + 1
 
         if self.args.cuda:
             self.model.to('cuda')
 
         self.model = self.model.eval()
 
-    def get_dep_matrix(self):
-        LAYER = int(self.args.layers)
-        LAYER += 1  # embedding layer
-        out = [[] for _ in range(LAYER)]
-
+    def perturbe(self, sentence, label, root_id, ud_deprels, results):
+        
         # generate masks
-        # get id for [MASK]
-        mask_id = self.tokenizer.encode('[MASK]')[1]
+        # get id for MASK
+        mask_id = self.tokenizer.mask_token_id
+        
+        # Convert token to vocabulary indices
+        indexed_tokens = self.tokenizer.encode(sentence)
+        tokenized_text = self.tokenizer.convert_ids_to_tokens(indexed_tokens)
+        
+        if '[UNK]' in tokenized_text or '<unk>' in tokenized_text:
+            return results
+            
+        ud_sent = sentence.split()
+        
+        # map tokens to words
+        if self.args.model in ["bert-base-multilingual-cased"]:
+            mapping = map_seq_bert(tokenized_text, ud_sent)
+        else:
+            mapping = map_seq_xlmr(tokenized_text, ud_sent)
+        
+        # generating mask indices
+        all_layers_matrix_as_list = [[] for i in range(self.layers)]
 
-        for ind, (sentence, tokens, label, deprels, root_id) in tqdm(enumerate(self.data), total=len(self.data)):
-
-            # Convert token to vocabulary indices
-            tokenized_text = list(tokens)
-            indexed_tokens = self.tokenizer.convert_tokens_to_ids(tokenized_text)
-
-            # map bpe tokens to words
-            mapping = map_seq(tokenized_text)
-
-            # generating mask indices
-            all_layers_matrix_as_list = [[] for i in range(LAYER)]
-
-            l_tokens = len(tokenized_text)
-
-            for i in range(0, l_tokens):
-
-                id_for_all_i_tokens = get_subwords(mapping, i)
-                tmp_indexed_tokens = list(indexed_tokens)
+        len_tokens = len(tokenized_text)
+        
+        for i in range(0, len_tokens):
+            
+            id_for_all_i_tokens = get_subwords(mapping, i)
+            tmp_indexed_tokens = list(indexed_tokens)
+            
+            # mask all bpe tokens of a word
+            for tmp_id in id_for_all_i_tokens:
+                tmp_indexed_tokens[tmp_id] = mask_id
+            one_batch = [list(tmp_indexed_tokens) for _ in range(len_tokens)]
+            
+            for j in range(len_tokens):
+                id_for_all_j_tokens = get_subwords(mapping, j)
                 # mask all bpe tokens of a word
-                for tmp_id in id_for_all_i_tokens:
-                    tmp_indexed_tokens[tmp_id] = mask_id
-                one_batch = [list(tmp_indexed_tokens) for _ in range(l_tokens)]
-
-                for j in range(l_tokens):
-                    id_for_all_j_tokens = get_subwords(mapping, j)
-                    # mask all bpe tokens of a word
-                    for tmp_id in id_for_all_j_tokens:
-                        one_batch[j][tmp_id] = mask_id
-
-                tokens_tensor = torch.tensor(one_batch)
-                segments_tensor = torch.tensor([[0 for _ in one_sent] for one_sent in one_batch])
-                if self.args.cuda:
-                    tokens_tensor = tokens_tensor.to('cuda')
-                    segments_tensor = segments_tensor.to('cuda')
-
-                # get hidden states
-                with torch.no_grad():
+                for tmp_id in id_for_all_j_tokens:
+                    one_batch[j][tmp_id] = mask_id 
+    
+            tokens_tensor = torch.tensor(one_batch)
+            segments_tensor = torch.tensor([[0 for _ in one_sent] for one_sent in one_batch])
+            if self.args.cuda:
+                tokens_tensor = tokens_tensor.to('cuda')
+                segments_tensor = segments_tensor.to('cuda')
+            
+            # get hidden states
+            with torch.no_grad():
+                if self.args.model in ["facebook/mbart-large-cc25"]:
+                    model_outputs = self.model(tokens_tensor)
+                    all_layers = model_outputs.encoder_hidden_states
+                else:
                     model_outputs = self.model(tokens_tensor, segments_tensor)
                     all_layers = model_outputs.hidden_states  # 12 layers + embedding layer
 
-                # get hidden states for word_i
-                for k, layer in enumerate(all_layers):
-                    if self.args.cuda:
-                        hidden_states_for_token_i = layer[:, i, :].cpu().numpy()
-                    else:
-                        hidden_states_for_token_i = layer[:, i, :].numpy()
-                    all_layers_matrix_as_list[k].append(hidden_states_for_token_i)
+            # get hidden states for word_i
+            for k, layer in enumerate(all_layers):
+                if self.args.cuda:
+                    hidden_states_for_token_i = layer[:, i, :].cpu().numpy()
+                else:
+                    hidden_states_for_token_i = layer[:, i, :].numpy()
+                all_layers_matrix_as_list[k].append(hidden_states_for_token_i)
+                
+            del one_batch, tokens_tensor, segments_tensor, model_outputs
+            
+        for k, one_layer_matrix in enumerate(all_layers_matrix_as_list):
+            init_matrix = np.zeros((len_tokens, len_tokens))
 
-                del one_batch, tokens_tensor, segments_tensor, model_outputs
+            for i, hidden_states in enumerate(one_layer_matrix):
+                base_state = hidden_states[i]
 
-            for k, one_layer_matrix in enumerate(all_layers_matrix_as_list):
-                init_matrix = np.zeros((l_tokens, l_tokens))
+                for j, state in enumerate(hidden_states):
+                    if self.args.metric == 'dist':
+                        init_matrix[i][j] = np.linalg.norm(base_state - state)
+                    if self.args.metric == 'cos':
+                        init_matrix[i][j] = np.dot(base_state, state) / (
+                                np.linalg.norm(base_state) * np.linalg.norm(state))
+                                
+            results[k].append((sentence, label, tokenized_text, root_id, ud_deprels, ud_sent, init_matrix, mapping))
+        
+        return results
+        
 
-                for i, hidden_states in enumerate(one_layer_matrix):
-                    base_state = hidden_states[i]
+    def extract_matrices(self):
+        
+        results = [[] for _ in range(self.layers)]
 
-                    for j, state in enumerate(hidden_states):
-                        if self.args.metric == 'dist':
-                            init_matrix[i][j] = np.linalg.norm(base_state - state)
-                        if self.args.metric == 'cos':
-                            init_matrix[i][j] = np.dot(base_state, state) / (
-                                    np.linalg.norm(base_state) * np.linalg.norm(state))
-                out[k].append((sentence, label, tokenized_text, eval(deprels), root_id, init_matrix))
+        for (label, correct_sent, incorrect_sent, cor_root, inc_root, ud_deprels) in tqdm(self.data, total=len(self.data)):
+            
+            if self.args.distance == True:
+                results = self.perturbe(correct_sent, 'O_'+label, cor_root, ud_deprels, results)
+                results = self.perturbe(incorrect_sent, 'I_'+label, inc_root, ud_deprels, results)
+                
+            else:
+                results = self.perturbe(correct_sent, 'O', cor_root, ud_deprels, results)
+                results = self.perturbe(incorrect_sent, 'I', inc_root, ud_deprels, results)
+            
+        return results
 
-        return out
+    def extract_trees(self, results):
+        
+        trees = {
+            layer: [] for layer in range(self.args.layers + 1)
+            
+        }
 
-    def extract_heads(self, matrix):
+        for layer, state in tqdm(enumerate(results), total=len(results)):
 
-        results = {}
-
-        for layer, state in tqdm(enumerate(matrix), total=len(matrix)):
-
-            for s, (sentence, label, tokens, ud_deprels, root_id, sent_matrix) in enumerate(state):
-
-                if s not in results:
-                    results[s] = {'text': sentence,
-                                  'label': label
-                                  }
-                if layer not in results[s]:
-                    results[s][layer] = {}
-
-                # map bpe tokens to words
-                mapping = map_seq(tokens)
+            for s, (sentence, label, tokens, root_id, ud_deprels, ud_sent, sent_matrix, mapping) in enumerate(state):
+        
                 init_matrix = sent_matrix
 
                 # merge subwords in one row
@@ -130,6 +152,7 @@ class ExtractDependencies(object):
                             new_row.append(buf[0])
                         buf = []
                     merge_column_matrix.append(new_row)
+               
 
                 # merge subwords in multi rows
                 # transpose the matrix so we can work with row instead of multiple rows
@@ -156,95 +179,180 @@ class ExtractDependencies(object):
 
                 # transpose to the original matrix
                 final_matrix = np.array(final_matrix).transpose()
-
-                # get root index and gold analysis
-                # root_id, ud_heads = get_ud_analysis(sentence, self.ud_model)
+                if self.args.model in ["facebook/mbart-large-cc25"]:
+                    final_matrix = final_matrix[:-1, :-1]
+                else:
+                    final_matrix = final_matrix[1:-1, 1:-1]
+                
+                # put gold root on 0 position
                 root = final_matrix[root_id].copy()
-
-                # put root on 0 position
                 final_matrix[root_id], final_matrix[0] = final_matrix[0], root
 
-                perturbed_sent = merge_tokens(tokens)
+                if self.args.model in ["facebook/mbart-large-cc25"]:
+                    perturbed_sent = merge_tokens(tokens, mapping)[:-1]
+                elif self.args.model in ["bert-base-multilingual-cased"]:
+                    perturbed_sent = merge_tokens(tokens, mapping)[1:-1]
+                elif self.args.model in ["xlm-roberta-base"]:
+                    perturbed_sent = merge_tokens(tokens, mapping)[1:-1]
+                    
                 perturbed_sent[root_id], perturbed_sent[0] = perturbed_sent[0], perturbed_sent[root_id]
 
                 # extract deprels
                 heads, _ = chu_liu_edmonds(final_matrix)
                 deprels = get_deprels(heads, perturbed_sent)
-
-                if 'ud' not in results[s]:
-                    results[s]['ud'] = {'deprels': ud_deprels}
-
+                
                 # to fix: when ud and bert tokenizations do not match
-                if len(deprels) != len(ud_deprels):
-                    continue
-
-                # save results
-                results[s][layer]['heads'] = heads
-                results[s][layer]['deprels'] = deprels
-                results[s][layer]['uas'] = uas(deprels, ud_deprels)
-                results[s][layer]['uuas'] = uuas(deprels, ud_deprels)
-
+                assert len(deprels) == len(ud_deprels)
+                    
+                trees[layer].append((label, deprels, ud_deprels))
+             
+        return trees
+        
+    def evaluate(self, probe_data):
+            
+        results = {'layers': {layer: {} for layer in range(len(probe_data))}}
+        
+        for layer, trees in tqdm(probe_data.items(), total=len(probe_data), desc='Layer-wise evaluation'):
+            
+            layer_results = {}
+            
+            for ind, (label, tree, ud_tree) in enumerate(trees):
+                if label not in layer_results:
+                    layer_results[label] = {'uas': [], 'uuas': []}
+                
+                layer_results[label]['uas'].append(uas(tree, ud_tree))
+                layer_results[label]['uuas'].append(uuas(tree, ud_tree))
+            
+            results['layers'][layer]['uas'] = {
+                label: np.mean(layer_results[label]['uas']) for label in layer_results
+            }
+            results['layers'][layer]['uuas'] = {
+                label: np.mean(layer_results[label]['uuas']) for label in layer_results
+            }
+            
+            # print(f"Layer {layer}")
+            # lables = [l.split('_')[1] for l in layer_results]
+            # for label in lables:
+            #     print(f"Org UAS: {np.mean(layer_results['O_'+label]['uas'])}\tOrg UUAS: {np.mean(layer_results['O_'+label]['uuas'])}")
+            #     print(f"Br UAS: {np.mean(layer_results['I_'+label]['uas'])}\tBr UUAS: {np.mean(layer_results['I_'+label]['uuas'])}\n")
+            
         return results
+            
+    def run(self):
+        set_seed()
+        print('Extracting matrices...')
+        matrix = self.extract_matrices()
+        print('Extracting trees...')
+        trees = self.extract_trees(matrix)
+        return trees
+        
+        
+class AttentionProbe(object):
+    def __init__(self, data, model, tokenizer, args):
+        self.data = data
+        self.model = model
+        self.tokenizer = tokenizer
+        self.args = args
+        
+        if self.args.model in ["facebook/mbart-large-cc25"]:
+            self.heads = 16
+        else:
+            self.heads = 12
 
-    def get_attention_matrix(self):
+        if self.args.cuda:
+            self.model.to('cuda')
 
-        LAYER = int(self.args.layers)
-        out = [[] for _ in range(LAYER)]
-
-        for ind, (sentence, tokens, label, deprels, root_id) in tqdm(
-                enumerate(self.data), total=len(self.data)):
-
-            # Convert token to vocabulary indices
-            tokenized_text = list(tokens)
-            indexed_tokens = self.tokenizer.convert_tokens_to_ids(tokenized_text)
-
-            if self.args.cuda:
-                tokens_tensor = torch.tensor([indexed_tokens]).to('cuda')
+        self.model = self.model.eval()
+    
+    def attend(self, sentence, label, root_id, ud_deprels, results):
+        
+        # Convert token to vocabulary indices
+        indexed_tokens = self.tokenizer.encode(sentence)
+        tokenized_text = self.tokenizer.convert_ids_to_tokens(indexed_tokens)
+        segments_tensor = torch.tensor([0 for _ in tokenized_text])
+        
+        if '[UNK]' in tokenized_text or '<unk>' in tokenized_text:
+            return results
+            
+        if self.args.cuda:
+            tokens_tensor = torch.tensor([indexed_tokens]).to('cuda')
+            segments_tensor = segments_tensor.to('cuda')
+        else:
+            tokens_tensor = torch.tensor([indexed_tokens])
+            
+        # get hidden states
+        with torch.no_grad():
+            model_outputs = self.model(tokens_tensor)
+            if self.args.model in ["facebook/mbart-large-cc25"]:
+                attentions = model_outputs.encoder_attentions
             else:
-                tokens_tensor = torch.tensor([indexed_tokens])
+                attentions = model_outputs.attentions 
+        for k, layer in enumerate(attentions):
+            if self.args.cuda:
+                attentions_for_layer = layer[0, :, :].cpu().numpy()
+            else:
+                attentions_for_layer = layer[0, :, :].numpy()
+            results[k].append((sentence, label, tokenized_text, root_id, ud_deprels, attentions_for_layer))
+                
+        return results
+    
+    def extract_matrices(self):
 
-            # get hidden states
-            with torch.no_grad():
-                model_outputs = self.model(tokens_tensor)
-                attentions = model_outputs.attentions  # 12 layers
+        out = [[] for _ in range(self.args.layers)]
 
-            for k, layer in enumerate(attentions):
-                if self.args.cuda:
-                    attentions_for_layer = layer[0, :, :].cpu().numpy()
-                else:
-                    attentions_for_layer = layer[0, :, :].numpy()
-                out[k].append((sentence, label, tokens, eval(deprels), root_id, attentions_for_layer))
-
+        for (label, correct_sent, incorrect_sent, cor_root, inc_root, ud_deprels) in tqdm(
+                self.data, total=len(self.data)):
+                    
+            if self.args.distance:
+                out = self.attend(correct_sent, 'O_'+label, cor_root, ud_deprels, out)
+                out = self.attend(incorrect_sent, 'I_'+label, inc_root, ud_deprels, out)
+                
+            else:
+                out = self.attend(correct_sent, 'O', cor_root, ud_deprels, out)
+                out = self.attend(incorrect_sent, 'I', inc_root, ud_deprels, out)
+        
         return out
 
-    def extract_heads_attention(self, matrix):
-        results = {}
+    def extract_trees(self, results):
+        
+        layers_trees = {
+            layer: {
+                head: [] for head in range(self.heads)
+            } for layer in range(self.args.layers)
+        }
 
-        for layer, state in tqdm(enumerate(matrix), total=len(matrix)):
+        for layer, state in tqdm(enumerate(results), total=len(results)):
 
-            for s, (sentence, label, tokens, ud_deprels, root_id, matrices) in enumerate(state):
-
-                if s not in results:
-                    results[s] = {}
-                    results[s]['text'] = sentence
-                    results[s]['label'] = label
-                if layer not in results[s]:
-                    results[s][layer] = {}
-
+            for s, (sentence, label, tokens, root_id, ud_deprels, matrices) in enumerate(state):
+                
+                ud_sent = sentence.split()
+                
+                if self.args.model in ["bert-base-multilingual-cased"]:
+                    mapping = map_seq_bert(tokens, ud_sent)
+                else:
+                    mapping = map_seq_xlmr(tokens, ud_sent)
+    
                 # put root at position 0 for dependecy extraction
-                perturbed_sent = merge_tokens(tokens)
-                perturbed_sent[root_id], perturbed_sent[0] = perturbed_sent[0], perturbed_sent[root_id]
-
-                if 'ud' not in results[s]:
-                    results[s]['ud'] = {'deprels': ud_deprels}
-
+                if self.args.model in ["facebook/mbart-large-cc25"]:
+                    perturbed_sent = merge_tokens(tokens, mapping)[:-1]
+                elif self.args.model in ["bert-base-multilingual-cased"]:
+                    perturbed_sent = merge_tokens(tokens, mapping)[1:-1]
+                elif self.args.model in ["xlm-roberta-base"]:
+                    perturbed_sent = merge_tokens(tokens, mapping)[1:-1]
+            
+                try:
+                    perturbed_sent[root_id], perturbed_sent[0] = perturbed_sent[0], perturbed_sent[root_id]
+                except:
+                    print(perturbed_sent)
+                    print([dep[0] for dep in ud_deprels])
+                    
                 for head, sent_matrix in enumerate(matrices):
-
-                    if head not in results[s][layer]:
-                        results[s][layer][head] = {}
-
-                    mapping = map_seq(tokens)
-                    init_matrix = sent_matrix
+                    
+                    # map tokens to words
+                    if self.args.model in ["facebook/mbart-large-cc25"]:
+                        init_matrix = sent_matrix[:-1, :-1]
+                    else:
+                        init_matrix = sent_matrix[1:-1, 1:-1]
 
                     # merge subwords in one row
                     merge_column_matrix = []
@@ -298,31 +406,85 @@ class ExtractDependencies(object):
 
                     # extract deprels
                     heads, _ = chu_liu_edmonds(final_matrix)
-
                     deprels = get_deprels(heads, perturbed_sent)
 
                     # to fix: when ud and bert tokenizations do not match
-                    if len(deprels) != len(ud_deprels):
-                        continue
-
-                    # save results
-                    results[s][layer][head]['heads'] = heads
-                    results[s][layer][head]['deprels'] = deprels
-                    results[s][layer][head]['uas'] = uas(deprels, ud_deprels)
-                    results[s][layer][head]['uuas'] = uuas(deprels, ud_deprels)
-
+                    # assert len(deprels) == len(ud_deprels)
+                    
+                    #     pass
+                    
+                    layers_trees[layer][head].append((label, deprels, ud_deprels))
+        # pprint(layers_trees)
+        return layers_trees
+      
+    
+    def evaluate(self, probe_data):
+    
+        results = {'layers': {layer: {} for layer in range(self.args.layers)}}
+        head_res = {layer: {head: {} for head in range(self.heads)} for layer in range(self.args.layers)}
+        
+        for layer, heads in tqdm(probe_data.items(), total=self.args.layers, desc='Layer-wise evaluation'):
+            
+            layer_results = {}
+        
+            for head, trees in heads.items():
+                
+                head_results = {}
+                
+                for label, tree, ud_tree in trees:
+                    
+                    if label not in layer_results:
+                        layer_results[label] = {'uas': [], 'uuas': []}
+                    if label not in head_results:
+                        head_results[label] = {'uas': [], 'uuas': []}
+                    
+                    layer_results[label]['uas'].append(uas(tree, ud_tree))
+                    layer_results[label]['uuas'].append(uuas(tree, ud_tree))
+                    
+                    head_results[label]['uas'].append(uas(tree, ud_tree))
+                    head_results[label]['uuas'].append(uuas(tree, ud_tree))
+                    
+                head_res[layer][head]['uas'] = {
+                    label: np.mean(head_results[label]['uas']) for label in head_results
+                }
+                head_res[layer][head]['uuas'] = {
+                    label: np.mean(head_results[label]['uuas']) for label in head_results
+                }
+                
+                # print(f"Layer {layer} Head: {head}")
+                # if self.args.dist:
+                #      lables = [l.split('_')[1] for l in head_results]
+                #      for label in lables:
+                #          print(f"Org UAS: {np.mean(head_results['O_'+label]['uas'])}\tOrg UUAS: {np.mean(head_results['O_'+label]['uuas'])}")
+                #          print(f"Br UAS: {np.mean(head_results['I_'+label]['uas'])}\tBr UUAS: {np.mean(head_results['I_'+label]['uuas'])}\n")
+                # else:
+                #     print(f"Org UAS: {np.mean(head_results['O']['uas'])}\tOrg UUAS: {np.mean(head_results['O']['uuas'])}")
+                #     print(f"Br UAS: {np.mean(head_results['I']['uas'])}\tBr UUAS: {np.mean(head_results['I']['uuas'])}\n")
+            
+            results['layers'][layer]['uas'] = {
+                label: np.mean(layer_results[label]['uas']) for label in layer_results
+            }
+            results['layers'][layer]['uuas'] = {
+                label: np.mean(layer_results[label]['uuas']) for label in layer_results
+            }
+            
+            # print(f"Layer {layer}")
+            # if self.args.dist:
+            #     for label in lables:
+            #         print(f"Org UAS: {np.mean(layer_results['O_'+label]['uas'])}\tOrg UUAS: {np.mean(layer_results['O_'+label]['uuas'])}")
+            #         print(f"Br UAS: {np.mean(layer_results['I_'+label]['uas'])}\tBr UUAS: {np.mean(layer_results['I_'+label]['uuas'])}\n")
+            # else:
+            #     print(f"Org UAS: {np.mean(layer_results['O']['uas'])}\tOrg UUAS: {np.mean(layer_results['O']['uuas'])}")
+            #     print(f"Br UAS: {np.mean(layer_results['I']['uas'])}\tBr UUAS: {np.mean(layer_results['I']['uuas'])}\n")
+        
+        results['heads'] = head_res
+        
         return results
 
-    def run_perturbed_probe(self):
+    def run(self):
         set_seed()
-        print('Extracting dependency matrix...')
-        matrix = self.get_dep_matrix()
+        print('Extracting matrices...')
+        matrix = self.extract_matrices()
         print('Extracting trees...')
-        return self.extract_heads(matrix)
-
-    def run_attentions_probe(self):
-        set_seed()
-        print('Extracting attention matrix...')
-        matrix = self.get_attention_matrix()
-        print('Extracting trees...')
-        return self.extract_heads_attention(matrix)
+        trees = self.extract_trees(matrix)
+        return trees
