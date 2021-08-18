@@ -5,17 +5,17 @@ import numpy as np
 
 
 class LoadModels(object):
-    def __init__(self, model, prober, position_embedding):
+    def __init__(self, model, prober, position_embedding, token_embedding):
         self.model = model
         self.prober = prober
         self.position_embedding = position_embedding
+        self.token_embedding = token_embedding
 
     def load_model(self):
         config = AutoConfig.from_pretrained(
             self.model,
             output_attentions=(True if self.prober == 'attention' else False),
-            output_hidden_states=(True if self.prober == 'perturbed' else False),
-            position_embedding_type=('absolute' if self.position_embedding == 'random' else self.position_embedding)
+            output_hidden_states=(True if self.prober == 'perturbed' else False)
         )
         if self.prober == 'logprob':
             model = AutoModelForMaskedLM.from_pretrained(self.model)
@@ -23,9 +23,14 @@ class LoadModels(object):
             model = AutoModel.from_config(config)
             
         if self.position_embedding == 'random':
-            pe = model.embeddings.position_embeddings.weight.data.numpy()
-            model.embeddings.position_embeddings.weight.data = torch.tensor(np.random.random(pe.shape))
-            model.embeddings.position_embeddings.weight.requires_grad = False
+            model.embeddings.position_embeddings.weight.data.normal_(mean=0.0, std=config.initializer_range)
+        elif self.position_embedding == 'zero':
+            model.embeddings.position_embeddings.weight.data.zero_()
+
+        if self.token_embedding == 'random':
+           model.embeddings.word_embeddings.weight.data.normal_(mean=0.0, std=config.initializer_range)
+        elif self.token_embedding == 'zero':
+           model.embeddings.word_embeddings.weight.data.zero_()
         return model
 
     def load_tokenizer(self):
