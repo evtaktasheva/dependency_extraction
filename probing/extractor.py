@@ -186,12 +186,13 @@ class PerturbedProbe(object):
                                  model=self.args.model,
                                  probe=self.args.prober)
         
-        filename = 'results/matrices/{task}/{model}/{probe}/layer_{layer}.pkl'
+        filename = 'results/matrices/{task}/{model}/{probe}/{pe}_layer_{layer}.pkl'
         for k, one_layer_out in enumerate(out):
 
             k_output = filename.format(task=self.dataset,
                                        model=self.args.model,
                                        probe=self.args.prober,
+                                       pe=self.args.position_embedding,
                                        layer=str(k))
             
             with open(k_output, 'wb') as fout:
@@ -206,12 +207,13 @@ class PerturbedProbe(object):
                           'delta iou': [],
                           'l2': []} for _ in range(self.layers)]
     
-        filename = 'results/matrices/{task}/{model}/{probe}/layer_{layer}.pkl'
+        filename = 'results/matrices/{task}/{model}/{probe}/{pe}_layer_{layer}.pkl'
         for l in tqdm(range(self.layers), total=self.layers):
 
             k_output = filename.format(task=self.dataset,
                                        model=self.args.model,
                                        probe=self.args.prober,
+                                       pe=self.args.position_embedding,
                                        layer=str(l))
             
             with open(k_output, 'rb') as f:
@@ -442,12 +444,13 @@ class AttentionProbe(object):
                                  model=self.args.model,
                                  probe=self.args.prober)
         
-        filename = 'results/matrices/{task}/{model}/{probe}/layer_{layer}.pkl'
+        filename = 'results/matrices/{task}/{model}/{probe}/{pe}_layer_{layer}.pkl'
         for k, one_layer_out in enumerate(out):
 
             k_output = filename.format(task=self.dataset,
                                        model=self.args.model,
                                        probe=self.args.prober,
+                                       pe=self.args.position_embedding,
                                        layer=str(k))
             
             with open(k_output, 'wb') as fout:
@@ -467,12 +470,13 @@ class AttentionProbe(object):
                           'delta iou': [],
                           'l2': []} for _ in range(self.heads)] for _ in range(self.layers)]
 
-        filename = 'results/matrices/{task}/{model}/{probe}/layer_{layer}.pkl'
+        filename = 'results/matrices/{task}/{model}/{probe}/{pe}_layer_{layer}.pkl'
         for l in tqdm(range(self.layers), total=self.layers):
 
             k_output = filename.format(task=self.dataset,
                                        model=self.args.model,
                                        probe=self.args.prober,
+                                       pe=self.args.position_embedding,
                                        layer=str(l))
             
             with open(k_output, 'rb') as f:
