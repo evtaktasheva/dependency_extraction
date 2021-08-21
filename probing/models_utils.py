@@ -22,10 +22,19 @@ class LoadModels(object):
             model = AutoModel.from_config(config)
             
         if self.position_embedding == 'random':
-            model.embeddings.position_embeddings.weight.data.normal_(mean=0.0, std=config.initializer_range)
+            if self.model in 'facebook/mbart-large-cc25']:
+                model.encoder.embed_positions.requires_grad_(False)
+                model.encoder.embed_positions.weight.normal_(mean=0.0, std=config.init_std)
+            else:
+                model.embeddings.position_embeddings.weight.data.normal_(mean=0.0, std=config.initializer_range)
+                model.embeddings.position_embeddings.weight.requires_grad = False
         elif self.position_embedding == 'zero':
-            model.embeddings.position_embeddings.weight.data.zero_()
-        model.embeddings.position_embeddings.weight.requires_grad = False
+            if self.model in 'facebook/mbart-large-cc25']:
+                model.encoder.embed_positions.requires_grad_(False)
+                model.encoder.embed_positions.weight.zero_()
+            else:
+                model.embeddings.position_embeddings.weight.data.zero_()
+                model.embeddings.position_embeddings.weight.requires_grad = False
 
         return model
 
