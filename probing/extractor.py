@@ -190,7 +190,7 @@ class PerturbedProbe(object):
         for k, one_layer_out in enumerate(out):
 
             k_output = filename.format(task=self.dataset,
-                                       model=self.args.model,
+                                       model=self.args.model.replace('/', '-'),
                                        probe=self.args.prober,
                                        pe=self.args.position_embedding,
                                        layer=str(k))
@@ -211,7 +211,7 @@ class PerturbedProbe(object):
         for l in tqdm(range(self.layers), total=self.layers):
 
             k_output = filename.format(task=self.dataset,
-                                       model=self.args.model,
+                                       model=self.args.model.replace('/', '-'),
                                        probe=self.args.prober,
                                        pe=self.args.position_embedding,
                                        layer=str(l))
@@ -448,7 +448,7 @@ class AttentionProbe(object):
         for k, one_layer_out in enumerate(out):
 
             k_output = filename.format(task=self.dataset,
-                                       model=self.args.model,
+                                       model=self.args.model.replace('/', '-'),
                                        probe=self.args.prober,
                                        pe=self.args.position_embedding,
                                        layer=str(k))
@@ -474,7 +474,7 @@ class AttentionProbe(object):
         for l in tqdm(range(self.layers), total=self.layers):
 
             k_output = filename.format(task=self.dataset,
-                                       model=self.args.model,
+                                       model=self.args.model.replace('/', '-'),
                                        probe=self.args.prober,
                                        pe=self.args.position_embedding,
                                        layer=str(l))
