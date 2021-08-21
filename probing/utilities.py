@@ -148,6 +148,7 @@ def iou(y_pred, y_true):
    
 
 def create_results_directory(save_dir_name: str, task: str, model: str, probe=None) -> str:
+    model = model.replace('/', '-')
     if probe:
         probe_task_dir_path = os.path.join(os.getcwd(), 'results', save_dir_name, task, model, probe)
     else:
