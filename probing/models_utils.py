@@ -22,14 +22,14 @@ class LoadModels(object):
             model = AutoModel.from_config(config)
             
         if self.position_embedding == 'random':
-            if self.model in 'facebook/mbart-large-cc25']:
+            if self.model in ['facebook/mbart-large-cc25']:
                 model.encoder.embed_positions.requires_grad_(False)
                 model.encoder.embed_positions.weight.normal_(mean=0.0, std=config.init_std)
             else:
                 model.embeddings.position_embeddings.weight.data.normal_(mean=0.0, std=config.initializer_range)
                 model.embeddings.position_embeddings.weight.requires_grad = False
         elif self.position_embedding == 'zero':
-            if self.model in 'facebook/mbart-large-cc25']:
+            if self.model in ['facebook/mbart-large-cc25']:
                 model.encoder.embed_positions.requires_grad_(False)
                 model.encoder.embed_positions.weight.zero_()
             else:
