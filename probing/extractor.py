@@ -470,9 +470,9 @@ class AttentionProbe(object):
         filename = 'results/matrices/{task}/{model}/{probe}/layer_{layer}.pkl'
         for l in tqdm(range(self.layers), total=self.layers):
 
-            k_output = filename.format(task='en_random_shift',
-                                       model='bert-base-multilingual-cased',
-                                       probe='attention',
+            k_output = filename.format(task=self.dataset,
+                                       model=self.args.model,
+                                       probe=self.args.prober,
                                        layer=str(l))
             
             with open(k_output, 'rb') as f:
