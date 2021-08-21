@@ -9,4 +9,3 @@ class Args:
         self.probe_tasks = []
         self.position_embedding = 'absolute'
         self.distance = False
-        self.token_embedding = 'default'

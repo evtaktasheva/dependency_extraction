@@ -5,6 +5,10 @@ import pandas as pd
 import random
 import torch
 from conllu import parse
+from tqdm.auto import tqdm
+from udapi.block.read.conllu import Conllu
+from io import StringIO
+from collections import defaultdict
 
 
 def set_seed(seed=42):
@@ -14,18 +18,67 @@ def set_seed(seed=42):
     torch.manual_seed(seed)
 
 
-def map_seq(tokens):
+def map_seq_bert(tokens, ud_sent):
+    merged = []
     mapped = []
-    for t, token in enumerate(tokens):
-        if token in ['[CLS]', '[SEP]']:
+    buf = []
+    ud = 0
+    i = 0
+    for t in range(len(tokens)):
+        if tokens[t] in ['[CLS]', '[SEP]']:
             mapped.append(-1)
-        elif token.startswith('##'):
-            mapped.append(mapped[t - 1])
+        elif tokens[t].startswith('#'):
+            buf.append(tokens[t][2:])
+            mapped.append(mapped[t-1])
         else:
-            if t == 0:
-                mapped.append(t)
+            if ''.join(buf) == ud_sent[ud]:
+                merged.append(''.join(buf))
+                ud += 1
+                i += 1
+                buf = [tokens[t]]
+                mapped.append(i)
             else:
-                mapped.append(mapped[t - 1] + 1)
+                if buf == ['[UNK]']:
+                    i += 1
+                    mapped.append(i)
+                    buf = [tokens[t]]
+                elif t == 1:
+                    mapped.append(i)
+                else:
+                    mapped.append(mapped[t-1])
+                buf.append(tokens[t])
+    return mapped
+    
+    
+def map_seq_xlmr(tokens, ud_sent):
+    merged = []
+    mapped = []
+    buf = []
+    ud = 0
+    i = 0
+    for t in range(len(tokens)):
+        if tokens[t] in ['<s>', '</s>']:
+            mapped.append(-1)
+        elif not tokens[t].startswith('▁'):
+            buf.append(tokens[t])
+            mapped.append(mapped[t-1])
+        else:
+            if ''.join(buf) == ud_sent[ud]:
+                merged.append(''.join(buf))
+                ud += 1
+                i += 1
+                buf = [tokens[t].strip('▁')]
+                mapped.append(i)
+            else:
+                if buf == ['<unk>']:
+                    i += 1
+                    mapped.append(i)
+                    buf = [tokens[t].strip('▁')]
+                elif t == 1 or t == 0:
+                    mapped.append(i)
+                else:
+                    mapped.append(mapped[t-1])
+                buf.append(tokens[t].strip('▁'))
     return mapped
 
 
@@ -35,120 +88,133 @@ def get_subwords(mapping, idx):
     return id_for_all_subwords
 
 
-def perturbe_ud(root_id, ud_heads):
-    for i, token in enumerate(ud_heads):
-        if token == 0:
-            ud_heads[i] = root_id
-        elif token == -1:
-            ud_heads[0], ud_heads[i] = token, ud_heads[0]
-        elif token == root_id:
-            ud_heads[i] = 0
-    return ud_heads
-
-
-def get_ud_analysis(sentence, pipeline):
-    analysis = parse(pipeline.process(sentence))
+def get_ud_analysis(analysis):
+    analysis = Conllu(filehandle=StringIO(analysis)).read_tree()
     heads = []
-    for token in analysis[0]:
-        if token['deprel'] == 'root':
-            root = token['id'] - 1
+    words = [node.form for node in analysis.descendants]
+    for id, token in enumerate(analysis.descendants):
+        if token.deprel == 'root':
+            # root_id = words.index(token.form)
             heads.append(-1)
         else:
-            heads.append(token['head'] - 1)
-    return root, perturbe_ud(root, heads)
-
-
-def merge_tokens(tokens):
-    out = []
-    buf = []
-    for token in tokens:
-        if token.startswith('##'):
-            buf.append(token[2:])
-        else:
-            if len(buf) > 1:
-                out.append(''.join(buf))
-                buf = [token]
-            else:
-                out.extend(buf)
-                buf = [token]
-    out.extend(buf)
-    return out
-
+            heads.append(words.index(token.parent.form))
+    return heads, words
+    
 
 def get_deprels(heads, tokens):
     deprels = []
+    tokens = [token.lower() for token in tokens]
     for i, head in enumerate(heads):
         deprels.append((tokens[i], tokens[head]))
     return deprels
 
+   
+def merge_tokens(tokens, mapping):
+    merged = []
+    buf = []
+    for t in range(len(mapping)):
+        if t == 0:
+            buf.append(tokens[t].strip('▁'))
+        elif mapping[t] == mapping[t-1]:
+            buf.append(tokens[t].strip('#').strip('▁'))
+        else:
+            merged.append(''.join(buf))
+            buf = [tokens[t].strip('▁')]
+    merged.append(''.join(buf))
+    return merged
+
 
 def uas(y_pred, y_true):
-    y_pred.sort()
-    y_true.sort()
-    count = 0
-    for i, deprel in enumerate(y_pred):
-        if deprel == y_true[i]:
-            count += 1
-    return count / len(y_pred)
+    return len(set(y_pred) & set(y_true)) / len(y_true) 
 
 
 def uuas(y_pred, y_true):
-    y_pred.sort()
-    y_true.sort()
-    count = 0
-    for i, deprel in enumerate(y_pred):
-        if deprel == y_true[i] or deprel[::-1] == y_true[i]:
-            count += 1
-    return count / len(y_pred)
+    y_pred = y_pred + [y[::-1] for y in y_pred]
+    return len(set(y_pred) & set(y_true)) / len(y_true) 
+  
+  
+def get_true_values(trees, layers=12):
+    trees = [[tree]*layers for tree in trees]
+    out = []
+    for layer in trees:
+        out.extend(layer)
+    return(out)
 
 
-def create_results_directory(task: str, save_dir_name: str) -> str:
-    probe_task_dir_path = os.path.join(os.getcwd(), save_dir_name, task)
+def iou(y_pred, y_true):
+    y_pred = set(y_pred + [y[::-1] for y in y_pred])
+    y_true = set(y_true + [y[::-1] for y in y_true])
+    return len(y_pred.intersection(y_true)) / len(y_pred.union(y_true))
+   
 
+def create_results_directory(save_dir_name: str, task: str, model: str, probe=None) -> str:
+    if probe:
+        probe_task_dir_path = os.path.join(os.getcwd(), 'results', save_dir_name, task, model, probe)
+    else:
+        probe_task_dir_path = os.path.join(os.getcwd(), 'results', save_dir_name, task, model) 
     if not os.path.exists(probe_task_dir_path):
         os.makedirs(probe_task_dir_path)
 
     return probe_task_dir_path
 
 
-def save_results(task, data):
-    dir_path = create_results_directory(task, save_dir_name='results')
-    file = f'{task}_results.json'
+def save_results(prober: str, model: str, task: str, position_embedding: str, data: dict):
+    dir_path = create_results_directory(task=task, model=model, save_dir_name='metrics')
+    file = f'{prober}_{position_embedding}_results.json'
     path = os.path.join(dir_path, file)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 
+def sort_matrix(a, sent):
+    rows = []
+    # sort columns
+    for row in a:
+        row = [i[0] for i in sorted(zip(row, sent), key=lambda x: x[1])]
+        rows.append(row)
+    # sort rows
+    cols = [i[0] for i in sorted(zip(rows, sent), key=lambda x: x[1])]
+    return np.array(cols)
+
+
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, df, tokenizer, max_len=-1):
-        self.sentences = [sent for sent in df.sentence]
-        self.tokenized = [tokenizer.tokenize(sent) for sent in df.sentence]
-        self.labels = [label for label in df.label]
-        self.deprels = [deprel for deprel in df.deprels]
-        self.roots = [int(root) for root in df.root_id]
+    def __init__(self, df, max_len=-1):
+        self.labels = [str(label) for label in df.label]
+        self.correct_sents = [sent for sent in df.correct_sent]
+        self.incorrect_sents = [sent for sent in df.incorrect_sent]
+        self.cor_roots = [int(root) for root in df.root]
+        self.inc_roots = [int(root) for root in df.inc_root]
+        heads = []
+        ud_sents = []
+        for sent in df.annotation:
+            head, ud_sent = get_ud_analysis(sent) 
+            heads.append(head)
+            ud_sents.append(ud_sent)
+        self.deprels = [get_deprels(heads[i], ud_sents[i]) for i in range(len(df))]
 
         if not max_len == -1:
-            print(f'shortening to {max_len}')
-            self.sentences = self.sentences[:max_len]
-            self.tokenized = self.tokenized[:max_len]
+            print(f'Shortening to {max_len}')
             self.labels = self.labels[:max_len]
+            self.correct_sents = self.correct_sents[:max_len]
+            self.incorrect_sents = self.incorrect_sents[:max_len]
+            self.cor_roots = self.cor_roots[:max_len]
+            self.inc_roots = self.inc_roots[:max_len]
             self.deprels = self.deprels[:max_len]
-            self.roots = self.roots[:max_len]
 
     def __len__(self):
-        return len(self.sentences)
+        return len(self.labels)
 
     def __getitem__(self, idx):
-        return self.sentences[idx], self.tokenized[idx], self.labels[idx], self.deprels[idx], self.roots[idx]
+        return (self.labels[idx], self.correct_sents[idx], self.incorrect_sents[idx], 
+                self.cor_roots[idx], self.inc_roots[idx], self.deprels[idx])
 
 
 class DataLoader(object):
-    def __init__(self, filename, tokenizer, max_len=-1):
+    def __init__(self, filename, max_len=-1):
         self.filename = filename
-        self.tokenizer = tokenizer
         self.max_len = max_len
         self.path = os.path.join(os.getcwd(), 'data')
 
     def load_data(self):
         data = pd.read_csv(os.path.join(self.path, self.filename + '.txt'), delimiter='\t')
-        return Dataset(data, self.tokenizer, max_len=self.max_len)
+        return Dataset(data, max_len=self.max_len)
