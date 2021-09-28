@@ -105,6 +105,8 @@ def get_deprels(heads, tokens):
     deprels = []
     tokens = [token.lower() for token in tokens]
     for i, head in enumerate(heads):
+        if head == -1:
+            head = i
         deprels.append((tokens[i], tokens[head]))
     return deprels
 
