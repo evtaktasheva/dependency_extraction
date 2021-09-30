@@ -1,5 +1,8 @@
 ## Shaking Syntactic Trees on the Sesame Street: Multilingual Probing with Controllable Perturbations
 
+The [paper](http://arxiv.org/abs/2109.14017) is accepted to the 1st Workshop on Multilingual Representation Learning ([MRL](https://www.sites.google.com/view/mrl-2021)) at EMNLP 2021. 
+
+
 ### Tasks
 The paper  proposes nine  probing  datasets  organized  by  the  type of controllable text perturbation for three Indo-European languages with a varying degree of word order flexibility:  nglish (West Germanic, analytic), Swedish (North Germanic, analytic), and Russian (Balto-Slavic, fusional).
 
